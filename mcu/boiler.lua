@@ -1,13 +1,22 @@
 -- Setup defaults --------------------------------------------------
 heater_pin = 2
 temp_pin = 1
-time_max = 2147483648
+time_max = 2147483648	-- when NodeMCU timer overflows
 
-config_update_interval = 30*1000
-heater_cycle_interval = 2*1000
+mqtt_address = "192.168.11.118"
+mqtt_port = 1883
+mqtt_username = ""
+mqtt_password = ""
+mqtt_clientid = ""
+
+-- Intervals and time are in seconds
+config_update_interval = 30
+heater_cycle_interval = 2
 heater_on_max_time = 10
 heater_off_min_time = 10
-temp_max = 29
+
+-- Degrees are in Celsius
+temp_max = 28
 temp_min = 26
 
 temp_internal = temp_max
@@ -57,19 +66,24 @@ function heater_switch(flag)
    end
 end
 
+-- Retreive remote temperature --------------------------------------------
+function get_remote_temp()
+	http.get("http://httpbin.org/ip", nil, function(code, data)
+		if (code < 0) then
+			print("HTTP request failed")
+		else
+			print(code, data)
+		end
+	end)
+end
+
 
 -- Retreive temperature --------------------------------------------
 function get_temp()
-    --[[
-    if (temp_sensor == nil) then
-        temp_sensor = require("ds18b20")
-        temp_sensor.setup(temp_pin)
-    end
-    ]]
-    local temp = temp_sensor.readNumber()
-    log("Info: current temperature is: " .. temp)
-    -- TODO: Implement this
-    return temp
+    local local_temp = temp_sensor.readNumber()
+    log("Info: current local temperature is: " .. local_temp)
+    log("Info: current remote temperature is: " .. remote_temp)
+    return local_temp
 end
 
 
@@ -78,7 +92,7 @@ function read_config()
     log("Info: reading config from server")
     -- TODO: Implement this
 end
-tmr.alarm(2, config_update_interval, 1, read_config)
+tmr.alarm(2, config_update_interval*1000, 1, read_config)
 
 
 -- Main heating logic ----------------------------------------------
@@ -118,4 +132,17 @@ function heating()
         end
     end
 end
-tmr.alarm(1, heater_cycle_interval, 1, heating)
+tmr.alarm(1, heater_cycle_interval*1000, 1, heating)
+
+m = mqtt.Client(mqtt_clientid, 120, mqtt_username, mqtt_password)
+m:on("message", function(client, topic, data) 
+	if topic == "/data/sensors/temp" and data ~= nil then
+		log("Info: command received topic " .. topic .. ":" .. data)
+		if type(data)=='number' and 0<=data and data<=0xffff then
+			remote_temp = data
+ 			log("Info: remote_temp received: " .. remote_temp)
+		end
+	end
+end)
+m:subscribe("/commands/heater/*", 0)
+m:connect(mqtt_address, mqtt_port, false, true)
