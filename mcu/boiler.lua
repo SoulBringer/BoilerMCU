@@ -1,23 +1,24 @@
 -- Setup defaults --------------------------------------------------
 heater_pin = 2
 temp_pin = 1
+led_pin = 4
 time_max = 2147483648	-- when NodeMCU timer overflows
 
-mqtt_address = "192.168.11.118"
+mqtt_address = "m21.cloudmqtt.com"
 mqtt_port = 1883
-mqtt_username = ""
-mqtt_password = ""
-mqtt_clientid = ""
+mqtt_username = "qbrabuoq"
+mqtt_password = "gagc4ur5Dd9u"
+mqtt_clientid = "heater"
 
 -- Intervals and time are in seconds
-config_update_interval = 30
+temp_update_interval = 30
 heater_cycle_interval = 2
-heater_on_max_time = 10
-heater_off_min_time = 10
+heater_on_max_time = 60
+heater_off_min_time = 60
 
 -- Degrees are in Celsius
-temp_max = 28
-temp_min = 26
+temp_max = 22
+temp_min = 21
 
 temp_internal = temp_max
 temp_external = temp_max
@@ -30,6 +31,8 @@ gpio.write(heater_pin, gpio.HIGH)
 temp_sensor = require("ds18b20")
 tmr.delay(800000)
 temp_sensor.setup(temp_pin)
+temp_sensor.readNumber()
+gpio.mode(led_pin, gpio.OUTPUT, gpio.PULLUP)
 
 
 -- Log to serial & server ------------------------------------------
@@ -41,7 +44,9 @@ end
 -- Time operation routine ------------------------------------------
 function time_since(recent_time)
     -- Check and fix timer overflow
-    local time_dif = tmr.time() - recent_time
+    --local time_now = tmr.time()   --inaccurate https://goo.gl/OeAsfT
+    local time_now = tmr.now() / 1000000    -- temp fix
+    local time_dif = time_now - recent_time
     if (time_dif < 0) then
         time_dif = time_dif + time_max
     end
@@ -54,27 +59,22 @@ function heater_switch(flag)
     if (flag) then
         gpio.write(heater_pin, gpio.LOW)
         heater_on = true
-        heater_on_time = tmr.time()
+        heater_on_time = tmr.now() / 1000000    -- temp fix
         heater_off_time = nil
         log("Info: heater enabled on " .. heater_on_time)
+        if (m ~= nil) then
+            m:publish("/sensors/heater", "ON", 0, 0)
+        end
    else
         gpio.write(heater_pin, gpio.HIGH)
         heater_on = false
         heater_on_time = nil
-        heater_off_time = tmr.time()
+        heater_off_time = tmr.now() / 1000000    -- temp fix
         log("Info: heater disabled on " .. heater_off_time)
+        if (m ~= nil) then
+            m:publish("/sensors/heater", "OFF", 0, 0)
+        end
    end
-end
-
--- Retreive remote temperature --------------------------------------------
-function get_remote_temp()
-	http.get("http://httpbin.org/ip", nil, function(code, data)
-		if (code < 0) then
-			print("HTTP request failed")
-		else
-			print(code, data)
-		end
-	end)
 end
 
 
@@ -82,22 +82,32 @@ end
 function get_temp()
     local local_temp = temp_sensor.readNumber()
     log("Info: current local temperature is: " .. local_temp)
-    log("Info: current remote temperature is: " .. remote_temp)
     return local_temp
 end
 
 
--- Read configuration from server ----------------------------------
-function read_config()
-    log("Info: reading config from server")
-    -- TODO: Implement this
+-- Send temp -------------------------------------------------------
+function temp_send()
+    local temp = get_temp()
+    -- publish a message with data = hello, QoS = 0, retain = 0
+    m:publish("/sensors/temp/heater", temp, 0, 0)
 end
-tmr.alarm(2, config_update_interval*1000, 1, read_config)
+
+
+-- On MQTT message received ---------------------------------------
+function on_mqtt_message(client, topic, data)
+    log("Info: command received topic " .. topic .. ":" .. data)
+    --temp_update_interval
+    --temp_max
+    --temp_min
+    --heater_on_max_time
+    --heater_off_min_time
+    --heater_on
+end
 
 
 -- Main heating logic ----------------------------------------------
 function heating()
-    --log("Info: -------------------------------------------------")
     local temp = get_temp()
 
     -- Main logic
@@ -134,15 +144,38 @@ function heating()
 end
 tmr.alarm(1, heater_cycle_interval*1000, 1, heating)
 
-m = mqtt.Client(mqtt_clientid, 120, mqtt_username, mqtt_password)
-m:on("message", function(client, topic, data) 
-	if topic == "/data/sensors/temp" and data ~= nil then
-		log("Info: command received topic " .. topic .. ":" .. data)
-		if type(data)=='number' and 0<=data and data<=0xffff then
-			remote_temp = data
- 			log("Info: remote_temp received: " .. remote_temp)
-		end
-	end
+tmr.alarm(3, 5000, 1, function()
+    gpio.write(led_pin, gpio.LOW)
+    tmr.delay(100)
+    gpio.write(led_pin, gpio.HIGH)
+    tmr.delay(100)
+    gpio.write(led_pin, gpio.LOW)
+    tmr.delay(100)
+    gpio.write(led_pin, gpio.HIGH)
 end)
-m:subscribe("/commands/heater/*", 0)
-m:connect(mqtt_address, mqtt_port, false, true)
+
+tmr.alarm(2, 1000, 1, function()
+    if wifi.sta.getip() == nil then
+        --log("Info: Waiting for IP address")
+    else
+        tmr.stop(2)
+        log("Info: WiFi connection established, IP address: " .. wifi.sta.getip())
+        
+        m = mqtt.Client(mqtt_clientid, 120, mqtt_username, mqtt_password)
+        m:on("offline", function(client)
+            log("Info: MQTT reconnect")
+            m:connect(mqtt_address, mqtt_port, false, true)
+        end)
+        m:on("message", on_mqtt_message)        
+        m:subscribe("/heater/command/+", 0)
+        m:connect(mqtt_address, mqtt_port, false, true)
+
+        tmr.alarm(2, temp_update_interval*1000, 1, temp_send)
+        
+        tmr.alarm(3, 5000, 1, function()
+            gpio.write(led_pin, gpio.LOW)
+            tmr.delay(100)
+            gpio.write(led_pin, gpio.HIGH)
+        end)
+    end
+end)
