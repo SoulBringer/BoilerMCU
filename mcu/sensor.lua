@@ -52,6 +52,10 @@ tmr.alarm(2, 1000, 1, function()
         print("WiFi connection established, IP address: " .. wifi.sta.getip())
         
         m = mqtt.Client(mqtt_clientid, 120, mqtt_username, mqtt_password)
+        m:on("offline", function(client)
+            log("Info: MQTT reconnect")
+            m:connect(mqtt_address, mqtt_port, false, true)
+        end)
         m:on("message", function(client, topic, data) 
             if topic == "/sensors/command/update_interval" and data ~= nil then
                 log("Info: command received topic " .. topic .. ":" .. data)
